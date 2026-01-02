@@ -1,4 +1,10 @@
 import streamlit as st
+import appdirs as ad
+# --- YFINANCE CACHE FIX (STREAMLIT CLOUD İÇİN ÖZEL YAMA) ---
+# Bu kod bloğu, sunucuda "Dosya bulunamadı" veya "Timezone" hatalarını engeller.
+ad.user_cache_dir = lambda *args: "/tmp"
+# -----------------------------------------------------------
+
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -6,8 +12,6 @@ import plotly.graph_objects as go
 import plotly.express as px
 import datetime
 from scipy.stats import norm
-import io
-# data_cleaner.py dosyasından fonksiyonu çağırıyoruz
 from data_cleaner import clean_market_data
 
 # ---------------------------------------------------------
@@ -66,7 +70,6 @@ NAME_MAPPING = {
     "ETH/USD": "ETH-USD"
 }
 
-# Düz liste oluştur (Backtest seçimi için)
 FLAT_INSTRUMENTS = {}
 for cat, items in INSTRUMENTS.items():
     for ticker, info in items.items():
@@ -79,23 +82,17 @@ def update_portfolio_from_cleaner():
     if 'cleaned_data' in st.session_state:
         df_result = st.session_state['cleaned_data']
         match_count = 0
-        
         for index, row in df_result.iterrows():
             inst_name = row['Enstrüman']
             val = row['Değer']
-            
-            if pd.isna(val):
-                continue
-                
+            if pd.isna(val): continue
             ticker = NAME_MAPPING.get(inst_name)
-            
             if ticker:
                 lot_size = abs(float(val))
                 side = "Long" if float(val) >= 0 else "Short"
                 st.session_state[f"lot_{ticker}"] = lot_size
                 st.session_state[f"side_{ticker}"] = side
                 match_count += 1
-        
         if match_count > 0:
             st.toast(f"✅ {match_count} enstrüman başarıyla güncellendi!", icon="🚀")
         else:
@@ -109,56 +106,54 @@ def get_data(tickers, years=7):
     end_date = datetime.date.today()
     start_date = end_date - datetime.timedelta(days=years*365)
     all_tickers = tickers + ['^GSPC']
-    data = yf.download(all_tickers, start=start_date, end=end_date, progress=False, auto_adjust=True)['Close']
-    if isinstance(data, pd.Series):
-        data = data.to_frame()
-        data.columns = all_tickers
-    data = data.ffill().dropna()
-    return data
+    # Yfinance download işlemini daha güvenli hale getiriyoruz
+    try:
+        data = yf.download(all_tickers, start=start_date, end=end_date, progress=False, auto_adjust=True)['Close']
+        if isinstance(data, pd.Series):
+            data = data.to_frame()
+            data.columns = all_tickers
+        data = data.ffill().dropna()
+        return data
+    except Exception as e:
+        return pd.DataFrame()
 
 @st.cache_data
 def get_ohlc_data(ticker, years=2):
-    # DÜZELTME: Saatlik veri çekiyoruz. Yfinance 1h veriyi max 730 gün (2 yıl) verir.
-    df = yf.download(ticker, period="730d", interval="1h", progress=False, auto_adjust=True)
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    return df
+    # DÜZELTME: "730d" bazen çok fazla gelebilir, veri çekilemezse "1y" gibi daha kısa süreler denenebilir.
+    # Şimdilik 730d bırakıyoruz ama hata yakalama ekledik.
+    try:
+        df = yf.download(ticker, period="730d", interval="1h", progress=False, auto_adjust=True)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        
+        # Eğer veri boş dönerse (Sunucu engellemesi vs.)
+        if df.empty:
+            return pd.DataFrame()
+        return df
+    except Exception as e:
+        return pd.DataFrame()
 
 def run_backtest_strategy(df_hourly, sma_period, tp_usd, sl_usd, contract_size):
-    """
-    GELİŞMİŞ SAATLİK BACKTEST (ÇOKLU POZİSYON DESTEKLİ)
-    """
-    # 1. Veri Hazırlığı ve Timezone Temizliği
+    # Veri kopyası ve Timezone temizliği (Veri kaybını önler)
     df_h = df_hourly.copy()
     if df_h.index.tz is not None:
         df_h.index = df_h.index.tz_localize(None)
         
-    # 2. Saatlik Veriyi Günlüğe Çevirip SMA Hesapla (Trend Tespiti İçin)
-    df_daily = df_h.resample('D').agg({
-        'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'
-    }).dropna()
-    
-    # Günlük SMA Hesapla
+    df_daily = df_h.resample('D').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'}).dropna()
     df_daily['Daily_SMA'] = df_daily['Close'].rolling(window=sma_period).mean()
-    
-    # Dünün verilerini bugüne taşı (Shift 1) - Karar dünkü trende göre verilir
     df_daily['Prev_Daily_Close'] = df_daily['Close'].shift(1)
     df_daily['Prev_Daily_SMA'] = df_daily['Daily_SMA'].shift(1)
     
-    # 3. Günlük Veriyi Saatlik Veriye Yedir (Merge)
     df_h['Date_Only'] = df_h.index.normalize()
     df_daily['Date_Only'] = df_daily.index.normalize()
     
     daily_stats = df_daily[['Date_Only', 'Daily_SMA', 'Prev_Daily_Close', 'Prev_Daily_SMA']]
     merged_data = pd.merge(df_h.reset_index(), daily_stats, on='Date_Only', how='left')
     merged_data.set_index('Datetime', inplace=True)
-    
-    # Eksik verileri doldur
     merged_data[['Daily_SMA', 'Prev_Daily_Close', 'Prev_Daily_SMA']] = merged_data[['Daily_SMA', 'Prev_Daily_Close', 'Prev_Daily_SMA']].ffill()
     merged_data = merged_data.dropna()
     
-    # --- ÇOKLU POZİSYON SİMÜLASYONU ---
-    active_trades = [] # Açık pozisyonları tutan liste
+    active_trades = []
     closed_trades_pnl = 0
     total_wins = 0
     total_losses = 0
@@ -166,64 +161,46 @@ def run_backtest_strategy(df_hourly, sma_period, tp_usd, sl_usd, contract_size):
     tp_points = tp_usd / contract_size
     sl_points = sl_usd / contract_size
     
-    # Numpy array performansı
     open_arr = merged_data['Open'].values
     high_arr = merged_data['High'].values
     low_arr = merged_data['Low'].values
     close_arr = merged_data['Close'].values
-    
     daily_sma_arr = merged_data['Daily_SMA'].values
     prev_d_close_arr = merged_data['Prev_Daily_Close'].values
     prev_d_sma_arr = merged_data['Prev_Daily_SMA'].values
     
-    # Ana Simülasyon Döngüsü (Saat Saat İlerler)
     for i in range(len(merged_data)):
         curr_open = float(open_arr[i])
         curr_high = float(high_arr[i])
         curr_low = float(low_arr[i])
         curr_close = float(close_arr[i])
-        
         curr_daily_sma = float(daily_sma_arr[i])
         prev_close = float(prev_d_close_arr[i])
         prev_sma = float(prev_d_sma_arr[i])
         
-        # 1. YENİ POZİSYON AÇMA KONTROLÜ
+        # YENİ POZİSYON AÇMA
         if prev_close > prev_sma and curr_low <= curr_daily_sma:
             entry_price = curr_daily_sma if curr_open > curr_daily_sma else curr_open
-            active_trades.append({
-                'type': 'long',
-                'entry_price': entry_price,
-                'sl': entry_price - sl_points,
-                'tp': entry_price + tp_points,
-                'entry_index': i
-            })
+            active_trades.append({'type': 'long', 'entry_price': entry_price, 'sl': entry_price - sl_points, 'tp': entry_price + tp_points, 'entry_index': i})
             
         elif prev_close < prev_sma and curr_high >= curr_daily_sma:
             entry_price = curr_daily_sma if curr_open < curr_daily_sma else curr_open
-            active_trades.append({
-                'type': 'short',
-                'entry_price': entry_price,
-                'sl': entry_price + sl_points,
-                'tp': entry_price - tp_points,
-                'entry_index': i
-            })
+            active_trades.append({'type': 'short', 'entry_price': entry_price, 'sl': entry_price + sl_points, 'tp': entry_price - tp_points, 'entry_index': i})
 
-        # 2. AÇIK POZİSYONLARI KONTROL ET
+        # AÇIK POZİSYONLARI KONTROL ET
         remaining_trades = []
         for trade in active_trades:
             trade_closed = False
-            
             if trade['type'] == 'long':
                 if trade['entry_index'] == i:
                     if curr_low <= trade['sl']:
                         closed_trades_pnl -= sl_usd
                         total_losses += 1
                         trade_closed = True
-                    elif not trade_closed:
-                        if curr_close > curr_open and curr_high >= trade['tp']:
-                            closed_trades_pnl += tp_usd
-                            total_wins += 1
-                            trade_closed = True
+                    elif not trade_closed and (curr_close > curr_open and curr_high >= trade['tp']):
+                        closed_trades_pnl += tp_usd
+                        total_wins += 1
+                        trade_closed = True
                 else:
                     if curr_low <= trade['sl']:
                         closed_trades_pnl -= sl_usd
@@ -240,11 +217,10 @@ def run_backtest_strategy(df_hourly, sma_period, tp_usd, sl_usd, contract_size):
                         closed_trades_pnl -= sl_usd
                         total_losses += 1
                         trade_closed = True
-                    elif not trade_closed:
-                        if curr_close < curr_open and curr_low <= trade['tp']:
-                            closed_trades_pnl += tp_usd
-                            total_wins += 1
-                            trade_closed = True
+                    elif not trade_closed and (curr_close < curr_open and curr_low <= trade['tp']):
+                        closed_trades_pnl += tp_usd
+                        total_wins += 1
+                        trade_closed = True
                 else:
                     if curr_high >= trade['sl']:
                         closed_trades_pnl -= sl_usd
@@ -257,7 +233,6 @@ def run_backtest_strategy(df_hourly, sma_period, tp_usd, sl_usd, contract_size):
             
             if not trade_closed:
                 remaining_trades.append(trade)
-        
         active_trades = remaining_trades
 
     total_trades_count = total_wins + total_losses
@@ -308,9 +283,6 @@ def calculate_advanced_risk(positions_df, correlation_matrix, confidence_level=0
     
     return diversified_var, portfolio_std_dev, positions_df, undiversified_var, diversification_benefit
 
-def convert_df_to_csv(df):
-    return df.to_csv(index=False).encode('utf-8')
-
 # ---------------------------------------------------------
 # ARAYÜZ - SIDEBAR
 # ---------------------------------------------------------
@@ -360,22 +332,18 @@ scenarios = {"Equity": shock_equity/100, "Crypto": shock_crypto/100, "FX": shock
 st.title("🛡️ Institutional Risk Terminal (v4.2)")
 st.markdown("**Modules:** VaR Engine | Scenario Analysis | Performance | **Backtest Optimizer**")
 
-# Sekmelerin oluşturulması
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Risk Breakdown", "📉 Simulation & Heatmap", "📑 Detailed Report", "🚀 SMA Backtest Optimizer", "📋 Data Cleaner"])
 
-# --- TAB 1, 2, 3: MEVCUT RİSK ANALİZİ ---
 if selected_tickers:
     with st.spinner('FRM Risk Modelleri çalıştırılıyor...'):
         pass
 
-# Ana Risk Hesaplaması Butonu
 run_risk = st.sidebar.button("CALCULATE RISK", type="primary")
 
 if run_risk:
     if not selected_tickers:
         st.error("⚠️ Lütfen sol menüden pozisyon girin.")
     else:
-        # 1. Veri Hazırlığı
         raw_data = get_data(selected_tickers, years=2)
         if not raw_data.empty:
             if '^GSPC' in raw_data.columns:
@@ -386,14 +354,11 @@ if run_risk:
             asset_data = raw_data[selected_tickers]
             latest_prices = asset_data.iloc[-1]
             returns_df = asset_data.pct_change().dropna()
-            
             benchmark_returns = benchmark_data.pct_change().dropna() 
-            
             common_index = returns_df.index.intersection(benchmark_returns.index)
             returns_df = returns_df.loc[common_index]
             benchmark_returns = benchmark_returns.loc[common_index]
 
-            # 2. Pozisyon Hesapları
             pos_df = pd.DataFrame(portfolio_input)
             current_prices_list = []
             simulated_pnl_impact = []
@@ -416,7 +381,6 @@ if run_risk:
             total_net_exposure = pos_df['Signed_Exposure'].sum()
             total_scenario_pnl = pos_df['Scenario_PnL'].sum()
 
-            # 3. Metrikler
             if total_gross_exposure > 0:
                 weights = pos_df.set_index('Ticker')['Signed_Exposure'] / total_net_exposure if total_net_exposure != 0 else 0
                 aligned_weights = [weights.get(t, 0) for t in returns_df.columns]
@@ -425,7 +389,6 @@ if run_risk:
             else:
                 sharpe, sortino, beta = 0, 0, 0
 
-            # 4. Risk
             corr_matrix = returns_df[pos_df['Ticker']].corr()
             iv_var_99, iv_daily_std_dollar, detailed_risk_df, undiv_var, div_benefit = calculate_advanced_risk(pos_df, corr_matrix)
             iv_var_95 = iv_daily_std_dollar * norm.ppf(0.95)
@@ -433,7 +396,6 @@ if run_risk:
             hist_pnl = returns_df[pos_df['Ticker']].dot(pos_df['Signed_Exposure'].values)
             hist_var_99 = hist_pnl.quantile(0.01)
 
-            # --- GÖRSELLEŞTİRME ---
             with tab1:
                 k1, k2, k3, k4 = st.columns(4)
                 k1.metric("Gross Exposure", f"${total_gross_exposure:,.0f}")
@@ -466,9 +428,6 @@ if run_risk:
             with tab3:
                 st.dataframe(detailed_risk_df.style.format({"Signed_Exposure": "${:,.0f}", "Marginal_VaR": "{:.4f}", "Component_VaR": "${:,.0f}", "Risk_Contribution_%": "%{:.2f}"}).background_gradient(subset=['Risk_Contribution_%'], cmap='Reds'), width="stretch")
 
-# ---------------------------------------------------------
-# TAB 4: BACKTEST OPTIMIZER (GRID SEARCH)
-# ---------------------------------------------------------
 with tab4:
     st.header("🧪 Çoklu Parametre Optimizasyonu (Grid Search)")
     st.markdown("Algoritma, **SMA 2-200** arası periyotları, seçtiğiniz **Risk:Kazanç (R:R)** oranlarıyla çaprazlayarak test eder.")
@@ -483,7 +442,6 @@ with tab4:
         
     with bc2:
         sl_input = st.number_input("Zarar Durdur (Sabit SL) - USD ($)", value=500, step=100)
-        # R:R Seçimi
         rr_options = [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0]
         selected_rrs = st.multiselect(
             "Test Edilecek Risk:Kazanç Oranları (R:R)", 
@@ -497,69 +455,52 @@ with tab4:
             st.error("Lütfen en az bir R:R oranı seçin.")
         else:
             with st.spinner(f"{ticker_to_test} için tüm kombinasyonlar (SMA x R:R) deneniyor..."):
-                # 1. Saatlik Veri Çek
                 df_backtest = get_ohlc_data(ticker_to_test, years=2)
                 
                 if df_backtest.empty:
-                    st.error("Veri çekilemedi.")
+                    st.error("Veri çekilemedi. Lütfen sayfayı yenileyip tekrar deneyin veya daha sonra deneyin (Yahoo Finance limiti).")
                 else:
                     sma_candidates = range(2, 201) 
                     results = []
-                    
                     total_iterations = len(sma_candidates) * len(selected_rrs)
                     progress_bar = st.progress(0)
                     counter = 0
                     
-                    # --- NESTED LOOP (GRID SEARCH) ---
                     for sma in sma_candidates:
                         for rr in selected_rrs:
-                            # TP Dinamik Hesaplanır
                             calculated_tp = sl_input * rr
-                            
                             net_pnl, win_rate, total_trades = run_backtest_strategy(
                                 df_backtest, sma, calculated_tp, sl_input, contract_size_test
                             )
-                            
                             results.append({
-                                "SMA_Period": sma, # Düzeltildi
+                                "SMA_Period": sma, 
                                 "RR_Ratio": rr,
                                 "TP_Target ($)": calculated_tp,
                                 "Net PnL ($)": net_pnl,
                                 "Win Rate (%)": win_rate,
                                 "Total Trades": total_trades
                             })
-                            
                             counter += 1
-                            if counter % 10 == 0: # UI'yi boğmamak için
+                            if counter % 10 == 0: 
                                 progress_bar.progress(counter / total_iterations)
                     
                     progress_bar.progress(1.0)
-                    
-                    # 3. Sonuç Analizi
                     res_df = pd.DataFrame(results)
                     sorted_df = res_df.sort_values(by="Net PnL ($)", ascending=False).reset_index(drop=True)
-                    
                     st.success("Tüm kombinasyonlar test edildi!")
                     
-                    # --- ŞAMPİYON ---
                     best_result = sorted_df.iloc[0]
-                    
                     c1, c2, c3, c4 = st.columns(4)
                     c1.metric("🏆 En İyi SMA", f"SMA {int(best_result['SMA_Period'])}")
                     c2.metric("💎 En İyi R:R", f"1 : {best_result['RR_Ratio']}")
                     c3.metric("Toplam Kâr", f"${best_result['Net PnL ($)']:,.0f}")
                     c4.metric("Kazanma Oranı", f"%{best_result['Win Rate (%)']:.1f}")
-                    
                     st.divider()
                     
-                    # --- HEATMAP (ISI HARİTASI) ---
                     st.subheader("🔥 Performans Isı Haritası (Heatmap)")
                     st.markdown("Hangi SMA ve R:R bölgesinin en verimli olduğunu görselleştirin.")
                     
-                    # Pivot Table oluştur (X=SMA, Y=RR, Z=PnL)
-                    # Sütun isimleri artık uyumlu (SMA_Period)
                     pivot_table = res_df.pivot(index='RR_Ratio', columns='SMA_Period', values='Net PnL ($)')
-                    
                     fig_heat = px.imshow(
                         pivot_table,
                         labels=dict(x="SMA Periyodu", y="Risk:Reward Oranı", color="Net PnL ($)"),
@@ -568,10 +509,9 @@ with tab4:
                         aspect="auto",
                         color_continuous_scale="RdBu"
                     )
-                    fig_heat.update_yaxes(type='category') # R:R oranlarını kategorik göster
+                    fig_heat.update_yaxes(type='category')
                     st.plotly_chart(fig_heat, use_container_width=True)
 
-                    # --- DETAYLI TABLO ---
                     st.subheader("🏅 En Çok Kazandıran İlk 10 Kombinasyon")
                     st.dataframe(
                         sorted_df.head(10).style.format({
@@ -583,19 +523,12 @@ with tab4:
                         width="stretch"
                     )
 
-# ---------------------------------------------------------
-# TAB 5: DATA CLEANER & AUTO-FILL
-# ---------------------------------------------------------
 with tab5:
     st.header("📋 Piyasa Verisi Ayrıştırıcı ve Aktarıcı")
-    
     col_clean1, col_clean2 = st.columns([2, 1])
-
     with col_clean1:
         st.markdown("Veriyi aşağıya yapıştırın. Sistem enstrüman isimlerini tanıyıp portföyü otomatik oluşturacaktır.")
         raw_text_input = st.text_area("Metin Girişi:", height=150, placeholder="Örnek: EUR/USD 1.05 US30 34000...")
-        
-        # Temizleme Butonu
         if st.button("1. Veriyi Analiz Et", type="primary"):
             if raw_text_input:
                 df_cleaned = clean_market_data(raw_text_input)
@@ -609,9 +542,6 @@ with tab5:
         st.subheader("Sonuç ve Aktarım")
         if 'cleaned_data' in st.session_state:
             df_result = st.session_state['cleaned_data']
-            
             st.dataframe(df_result, height=200, width="stretch")
-            
-            # --- AKTARIM BUTONU ---
             st.markdown("---")
             st.button("2. Portföye Aktar (Auto-Fill) 📥", on_click=update_portfolio_from_cleaner)
