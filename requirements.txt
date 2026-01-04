@@ -6,4 +6,5 @@ plotly
 scipy
 appdirs
 matplotlib
-# guncelleme
+# update
+
