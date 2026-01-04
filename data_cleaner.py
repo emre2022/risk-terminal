@@ -4,33 +4,33 @@ import numpy as np
 
 def clean_market_data(raw_text):
     """
-    Karışık finansal veri metnini temizleyip Pandas DataFrame'e çevirir.
+    Parses mixed financial text data into a Pandas DataFrame.
     """
     if not raw_text:
         return pd.DataFrame()
 
-    # Gereksiz başlıkları temizle
+    # Remove unnecessary headers
     text = raw_text.replace("ParityT+F", "")
     
-    # Rakamla biten endeks isimlerini korumaya al (örn: US30 -> US30|)
+    # Protect index names ending with numbers (e.g., US30 -> US30|)
     known_indices = ["US30", "NAS100", "E DJI", "Em NQ", "NIKKEI JPN IND", "S&P500", "DAX", "^GDAXI"]
     for index in known_indices:
         text = text.replace(index, f"{index}|")
 
-    # Regex ile Ayıklama
-    # Mantık: İsim kısmı | Değer kısmı
+    # Regex Extraction
+    # Logic: Name part | Value part
     pattern = r"([A-Za-z0-9/\s\(\)\.-]+?)(?:\|)?(-?\d+\.\d+|-?\d+|(?<=[A-Za-z])-|$)((?=[A-Z])|$)"
     matches = re.findall(pattern, text)
 
-    # Regex çıktısını temizle
+    # Clean regex output
     clean_matches = [[m[0].strip(), m[1]] for m in matches]
 
-    # DataFrame Oluşturma
-    df = pd.DataFrame(clean_matches, columns=["Enstrüman", "Değer"])
+    # Create DataFrame (English Columns)
+    df = pd.DataFrame(clean_matches, columns=["Instrument", "Value"])
 
-    # Sayısal Temizlik
-    # '-' veya boşluk olanları NaN yap, gerisini sayıya çevir
-    df["Değer"] = df["Değer"].replace(["-", ""], np.nan)
-    df["Değer"] = pd.to_numeric(df["Değer"], errors='coerce')
+    # Numeric Cleaning
+    # Replace '-' or empty strings with NaN, convert rest to numbers
+    df["Value"] = df["Value"].replace(["-", ""], np.nan)
+    df["Value"] = pd.to_numeric(df["Value"], errors='coerce')
 
     return df
