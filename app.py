@@ -1,9 +1,8 @@
 import streamlit as st
 import appdirs as ad
-# --- YFINANCE CACHE FIX (STREAMLIT CLOUD İÇİN ÖZEL YAMA) ---
-# Bu kod bloğu, sunucuda "Dosya bulunamadı" veya "Timezone" hatalarını engeller.
+# --- YFINANCE CACHE FIX ---
 ad.user_cache_dir = lambda *args: "/tmp"
-# -----------------------------------------------------------
+# --------------------------
 
 import yfinance as yf
 import pandas as pd
@@ -15,15 +14,15 @@ from scipy.stats import norm
 from data_cleaner import clean_market_data
 
 # ---------------------------------------------------------
-# SAYFA AYARLARI
+# PAGE SETTINGS
 # ---------------------------------------------------------
 st.set_page_config(page_title="Institutional Risk Terminal", layout="wide", page_icon="🏦")
 
 # ---------------------------------------------------------
-# MASTER ENSTRÜMAN LİSTESİ
+# MASTER INSTRUMENT LIST
 # ---------------------------------------------------------
 INSTRUMENTS = {
-    "Endeksler": {
+    "Indices": {
         "NQ=F": {"name": "Nasdaq 100 E-mini", "size": 20, "def_iv": 18.12, "cat": "Equity"},
         "ES=F": {"name": "S&P 500 E-mini", "size": 50, "def_iv": 14.50, "cat": "Equity"},
         "YM=F": {"name": "Dow Jones E-mini", "size": 5, "def_iv": 13.00, "cat": "Equity"},
@@ -36,7 +35,7 @@ INSTRUMENTS = {
         "USDJPY=X": {"name": "USD/JPY Spot", "size": 100000, "def_iv": 10.50, "cat": "FX"},
         "USDTRY=X": {"name": "USD/TRY Spot", "size": 100000, "def_iv": 25.00, "cat": "FX"},
     },
-    "Emtia & Enerji": {
+    "Commodities & Energy": {
         "GC=F": {"name": "Gold Futures (100oz)", "size": 100, "def_iv": 15.00, "cat": "Commodity"},
         "SI=F": {"name": "Silver Futures (5000oz)", "size": 5000, "def_iv": 28.00, "cat": "Commodity"},
         "CL=F": {"name": "Crude Oil WTI", "size": 1000, "def_iv": 35.00, "cat": "Commodity"},
@@ -44,13 +43,13 @@ INSTRUMENTS = {
         "PL=F": {"name": "Platinum", "size": 50, "def_iv": 22.00, "cat": "Commodity"},
         "PA=F": {"name": "Palladium", "size": 100, "def_iv": 30.00, "cat": "Commodity"},
     },
-    "Kripto": {
+    "Crypto": {
         "BTC-USD": {"name": "Bitcoin", "size": 1, "def_iv": 55.00, "cat": "Crypto"},
         "ETH-USD": {"name": "Ethereum", "size": 1, "def_iv": 60.00, "cat": "Crypto"},
     }
 }
 
-# --- İSİM EŞLEŞTİRME HARİTASI ---
+# --- NAME MAPPING ---
 NAME_MAPPING = {
     "EUR/USD": "EURUSD=X",
     "GBP/USD": "GBPUSD=X",
@@ -59,10 +58,10 @@ NAME_MAPPING = {
     "DAX": "^GDAXI",    
     "US30": "YM=F",     # Dow Jones
     "NAS100": "NQ=F",   # Nasdaq
-    "E DJI": "YM=F",    # Dow Jones alternatifi
-    "Em NQ": "NQ=F",    # Nasdaq alternatifi
-    "XAU/USD": "GC=F",  # Altın
-    "Lt Crude": "CL=F", # Ham Petrol
+    "E DJI": "YM=F",    # Dow Jones alt
+    "Em NQ": "NQ=F",    # Nasdaq alt
+    "XAU/USD": "GC=F",  # Gold
+    "Lt Crude": "CL=F", # Crude Oil
     "Brent Crude": "CL=F",
     "Natural Gas": "NG=F",
     "Platinum": "PL=F",
@@ -76,16 +75,19 @@ for cat, items in INSTRUMENTS.items():
         FLAT_INSTRUMENTS[f"{info['name']} ({ticker})"] = {"ticker": ticker, "size": info['size']}
 
 # ---------------------------------------------------------
-# CALLBACK FONKSİYONU
+# CALLBACK FUNCTION
 # ---------------------------------------------------------
 def update_portfolio_from_cleaner():
     if 'cleaned_data' in st.session_state:
         df_result = st.session_state['cleaned_data']
         match_count = 0
         for index, row in df_result.iterrows():
-            inst_name = row['Enstrüman']
-            val = row['Değer']
+            # Updated to match English column names from data_cleaner.py
+            inst_name = row['Instrument']
+            val = row['Value']
+            
             if pd.isna(val): continue
+            
             ticker = NAME_MAPPING.get(inst_name)
             if ticker:
                 lot_size = abs(float(val))
@@ -94,19 +96,18 @@ def update_portfolio_from_cleaner():
                 st.session_state[f"side_{ticker}"] = side
                 match_count += 1
         if match_count > 0:
-            st.toast(f"✅ {match_count} enstrüman başarıyla güncellendi!", icon="🚀")
+            st.toast(f"✅ {match_count} instruments updated successfully!", icon="🚀")
         else:
-            st.toast("⚠️ Eşleşen enstrüman bulunamadı.", icon="⚠️")
+            st.toast("⚠️ No matching instruments found.", icon="⚠️")
 
 # ---------------------------------------------------------
-# FONKSİYONLAR
+# CORE FUNCTIONS
 # ---------------------------------------------------------
 @st.cache_data
 def get_data(tickers, years=7):
     end_date = datetime.date.today()
     start_date = end_date - datetime.timedelta(days=years*365)
     all_tickers = tickers + ['^GSPC']
-    # Yfinance download işlemini daha güvenli hale getiriyoruz
     try:
         data = yf.download(all_tickers, start=start_date, end=end_date, progress=False, auto_adjust=True)['Close']
         if isinstance(data, pd.Series):
@@ -119,14 +120,11 @@ def get_data(tickers, years=7):
 
 @st.cache_data
 def get_ohlc_data(ticker, years=2):
-    # DÜZELTME: "730d" bazen çok fazla gelebilir, veri çekilemezse "1y" gibi daha kısa süreler denenebilir.
-    # Şimdilik 730d bırakıyoruz ama hata yakalama ekledik.
     try:
         df = yf.download(ticker, period="730d", interval="1h", progress=False, auto_adjust=True)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         
-        # Eğer veri boş dönerse (Sunucu engellemesi vs.)
         if df.empty:
             return pd.DataFrame()
         return df
@@ -134,16 +132,18 @@ def get_ohlc_data(ticker, years=2):
         return pd.DataFrame()
 
 def run_backtest_strategy(df_hourly, sma_period, tp_usd, sl_usd, contract_size):
-    # Veri kopyası ve Timezone temizliği (Veri kaybını önler)
+    # Data Copy & Timezone Fix
     df_h = df_hourly.copy()
     if df_h.index.tz is not None:
         df_h.index = df_h.index.tz_localize(None)
         
+    # Resample to Daily
     df_daily = df_h.resample('D').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'}).dropna()
     df_daily['Daily_SMA'] = df_daily['Close'].rolling(window=sma_period).mean()
     df_daily['Prev_Daily_Close'] = df_daily['Close'].shift(1)
     df_daily['Prev_Daily_SMA'] = df_daily['Daily_SMA'].shift(1)
     
+    # Merge Hourly with Daily Stats
     df_h['Date_Only'] = df_h.index.normalize()
     df_daily['Date_Only'] = df_daily.index.normalize()
     
@@ -153,6 +153,7 @@ def run_backtest_strategy(df_hourly, sma_period, tp_usd, sl_usd, contract_size):
     merged_data[['Daily_SMA', 'Prev_Daily_Close', 'Prev_Daily_SMA']] = merged_data[['Daily_SMA', 'Prev_Daily_Close', 'Prev_Daily_SMA']].ffill()
     merged_data = merged_data.dropna()
     
+    # Simulation Variables
     active_trades = []
     closed_trades_pnl = 0
     total_wins = 0
@@ -161,6 +162,7 @@ def run_backtest_strategy(df_hourly, sma_period, tp_usd, sl_usd, contract_size):
     tp_points = tp_usd / contract_size
     sl_points = sl_usd / contract_size
     
+    # Numpy Arrays for Speed
     open_arr = merged_data['Open'].values
     high_arr = merged_data['High'].values
     low_arr = merged_data['Low'].values
@@ -178,7 +180,7 @@ def run_backtest_strategy(df_hourly, sma_period, tp_usd, sl_usd, contract_size):
         prev_close = float(prev_d_close_arr[i])
         prev_sma = float(prev_d_sma_arr[i])
         
-        # YENİ POZİSYON AÇMA
+        # 1. NEW POSITION ENTRY
         if prev_close > prev_sma and curr_low <= curr_daily_sma:
             entry_price = curr_daily_sma if curr_open > curr_daily_sma else curr_open
             active_trades.append({'type': 'long', 'entry_price': entry_price, 'sl': entry_price - sl_points, 'tp': entry_price + tp_points, 'entry_index': i})
@@ -187,11 +189,13 @@ def run_backtest_strategy(df_hourly, sma_period, tp_usd, sl_usd, contract_size):
             entry_price = curr_daily_sma if curr_open < curr_daily_sma else curr_open
             active_trades.append({'type': 'short', 'entry_price': entry_price, 'sl': entry_price + sl_points, 'tp': entry_price - tp_points, 'entry_index': i})
 
-        # AÇIK POZİSYONLARI KONTROL ET
+        # 2. MANAGE ACTIVE TRADES
         remaining_trades = []
         for trade in active_trades:
             trade_closed = False
+            
             if trade['type'] == 'long':
+                # Same bar check
                 if trade['entry_index'] == i:
                     if curr_low <= trade['sl']:
                         closed_trades_pnl -= sl_usd
@@ -201,6 +205,7 @@ def run_backtest_strategy(df_hourly, sma_period, tp_usd, sl_usd, contract_size):
                         closed_trades_pnl += tp_usd
                         total_wins += 1
                         trade_closed = True
+                # Subsequent bars
                 else:
                     if curr_low <= trade['sl']:
                         closed_trades_pnl -= sl_usd
@@ -284,11 +289,11 @@ def calculate_advanced_risk(positions_df, correlation_matrix, confidence_level=0
     return diversified_var, portfolio_std_dev, positions_df, undiversified_var, diversification_benefit
 
 # ---------------------------------------------------------
-# ARAYÜZ - SIDEBAR
+# UI - SIDEBAR
 # ---------------------------------------------------------
 st.sidebar.title("Trading Desk")
 
-# --- 1. POZİSYON GİRİŞİ ---
+# --- 1. POSITION INPUT ---
 st.sidebar.markdown("### 1. Portfolio Inputs")
 portfolio_input = []
 selected_tickers = []
@@ -298,9 +303,9 @@ for category, items in INSTRUMENTS.items():
         for ticker, info in items.items():
             st.markdown(f"**{info['name']}**") 
             c1, c2, c3 = st.columns([1.5, 1, 1.2])
-            lots = c1.number_input("Lot", min_value=0.0, step=0.1, key=f"lot_{ticker}", label_visibility="collapsed")
-            side = c2.selectbox("Yön", ["Long", "Short"], key=f"side_{ticker}", label_visibility="collapsed")
-            iv = c3.number_input("IV%", value=info['def_iv'], step=0.1, key=f"iv_{ticker}", help="Yıllık IV")
+            lots = c1.number_input("Lots", min_value=0.0, step=0.1, key=f"lot_{ticker}", label_visibility="collapsed")
+            side = c2.selectbox("Side", ["Long", "Short"], key=f"side_{ticker}", label_visibility="collapsed")
+            iv = c3.number_input("IV%", value=info['def_iv'], step=0.1, key=f"iv_{ticker}", help="Annual IV")
             
             if lots > 0:
                 direction = 1 if side == 'Long' else -1
@@ -316,7 +321,7 @@ for category, items in INSTRUMENTS.items():
                 })
                 selected_tickers.append(ticker)
 
-# --- 2. SENARYO ANALİZİ ---
+# --- 2. SCENARIO ANALYSIS ---
 st.sidebar.markdown("---")
 st.sidebar.markdown("### ⚡ Stress Testing")
 shock_equity = st.sidebar.slider("Equity Shock (%)", -50, 50, 0, step=1)
@@ -327,23 +332,24 @@ shock_commodity = st.sidebar.slider("Commodity Shock (%)", -30, 30, 0, step=1)
 scenarios = {"Equity": shock_equity/100, "Crypto": shock_crypto/100, "FX": shock_fx/100, "Commodity": shock_commodity/100}
 
 # ---------------------------------------------------------
-# ANA EKRAN
+# MAIN SCREEN
 # ---------------------------------------------------------
-st.title("🛡️ Institutional Risk Terminal (v4.2)")
+st.title("🛡️ Institutional Risk Terminal (v4.3)")
 st.markdown("**Modules:** VaR Engine | Scenario Analysis | Performance | **Backtest Optimizer**")
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Risk Breakdown", "📉 Simulation & Heatmap", "📑 Detailed Report", "🚀 SMA Backtest Optimizer", "📋 Data Cleaner"])
 
 if selected_tickers:
-    with st.spinner('FRM Risk Modelleri çalıştırılıyor...'):
+    with st.spinner('Running FRM Risk Models...'):
         pass
 
 run_risk = st.sidebar.button("CALCULATE RISK", type="primary")
 
 if run_risk:
     if not selected_tickers:
-        st.error("⚠️ Lütfen sol menüden pozisyon girin.")
+        st.error("⚠️ Please enter positions from the sidebar.")
     else:
+        # 1. Data Prep
         raw_data = get_data(selected_tickers, years=2)
         if not raw_data.empty:
             if '^GSPC' in raw_data.columns:
@@ -359,6 +365,7 @@ if run_risk:
             returns_df = returns_df.loc[common_index]
             benchmark_returns = benchmark_returns.loc[common_index]
 
+            # 2. Positions
             pos_df = pd.DataFrame(portfolio_input)
             current_prices_list = []
             simulated_pnl_impact = []
@@ -381,6 +388,7 @@ if run_risk:
             total_net_exposure = pos_df['Signed_Exposure'].sum()
             total_scenario_pnl = pos_df['Scenario_PnL'].sum()
 
+            # 3. Metrics
             if total_gross_exposure > 0:
                 weights = pos_df.set_index('Ticker')['Signed_Exposure'] / total_net_exposure if total_net_exposure != 0 else 0
                 aligned_weights = [weights.get(t, 0) for t in returns_df.columns]
@@ -389,6 +397,7 @@ if run_risk:
             else:
                 sharpe, sortino, beta = 0, 0, 0
 
+            # 4. Risk
             corr_matrix = returns_df[pos_df['Ticker']].corr()
             iv_var_99, iv_daily_std_dollar, detailed_risk_df, undiv_var, div_benefit = calculate_advanced_risk(pos_df, corr_matrix)
             iv_var_95 = iv_daily_std_dollar * norm.ppf(0.95)
@@ -396,6 +405,7 @@ if run_risk:
             hist_pnl = returns_df[pos_df['Ticker']].dot(pos_df['Signed_Exposure'].values)
             hist_var_99 = hist_pnl.quantile(0.01)
 
+            # --- VISUALIZATION ---
             with tab1:
                 k1, k2, k3, k4 = st.columns(4)
                 k1.metric("Gross Exposure", f"${total_gross_exposure:,.0f}")
@@ -428,37 +438,40 @@ if run_risk:
             with tab3:
                 st.dataframe(detailed_risk_df.style.format({"Signed_Exposure": "${:,.0f}", "Marginal_VaR": "{:.4f}", "Component_VaR": "${:,.0f}", "Risk_Contribution_%": "%{:.2f}"}).background_gradient(subset=['Risk_Contribution_%'], cmap='Reds'), width="stretch")
 
+# ---------------------------------------------------------
+# TAB 4: BACKTEST OPTIMIZER (GRID SEARCH)
+# ---------------------------------------------------------
 with tab4:
-    st.header("🧪 Çoklu Parametre Optimizasyonu (Grid Search)")
-    st.markdown("Algoritma, **SMA 2-200** arası periyotları, seçtiğiniz **Risk:Kazanç (R:R)** oranlarıyla çaprazlayarak test eder.")
-    st.info("ℹ️ **Yöntem:** Sabit Stop Loss ($) belirlenir. Hedef Kar (TP), R:R oranına göre dinamik hesaplanır. Örn: SL 500$, R:R 1:2 ise TP 1000$ olur.")
+    st.header("🧪 Multi-Parameter Optimizer (Grid Search)")
+    st.markdown("The algorithm tests combinations of **SMA 2-200** periods and your selected **Risk:Reward (R:R)** ratios.")
+    st.info("ℹ️ **Method:** Fixed Stop Loss ($) is set. Take Profit (TP) is calculated dynamically based on R:R ratio. E.g., SL $500, R:R 1:2 means TP is $1000.")
     
     bc1, bc2 = st.columns(2)
     with bc1:
-        selected_inst_name = st.selectbox("Test Edilecek Enstrüman", list(FLAT_INSTRUMENTS.keys()))
+        selected_inst_name = st.selectbox("Instrument to Test", list(FLAT_INSTRUMENTS.keys()))
         ticker_to_test = FLAT_INSTRUMENTS[selected_inst_name]['ticker']
         contract_size_test = FLAT_INSTRUMENTS[selected_inst_name]['size']
-        st.info(f"**{ticker_to_test}** seçildi. (Çarpan: {contract_size_test})")
+        st.info(f"**{ticker_to_test}** selected. (Multiplier: {contract_size_test})")
         
     with bc2:
-        sl_input = st.number_input("Zarar Durdur (Sabit SL) - USD ($)", value=500, step=100)
+        sl_input = st.number_input("Stop Loss (Fixed SL) - USD ($)", value=500, step=100)
         rr_options = [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0]
         selected_rrs = st.multiselect(
-            "Test Edilecek Risk:Kazanç Oranları (R:R)", 
+            "Risk:Reward Ratios to Test (R:R)", 
             options=rr_options,
             default=[1.0, 1.5, 2.0, 2.5, 3.0]
         )
-        st.caption("Örn: 1.5 seçerseniz, 500$ risk için 750$ kar hedeflenir.")
+        st.caption("E.g., 1.5 means targeting $750 profit for $500 risk.")
 
-    if st.button("🚀 Grid Taramayı Başlat"):
+    if st.button("🚀 Start Grid Scan"):
         if not selected_rrs:
-            st.error("Lütfen en az bir R:R oranı seçin.")
+            st.error("Please select at least one R:R ratio.")
         else:
-            with st.spinner(f"{ticker_to_test} için tüm kombinasyonlar (SMA x R:R) deneniyor..."):
+            with st.spinner(f"Testing all SMA x R:R combinations for {ticker_to_test}..."):
                 df_backtest = get_ohlc_data(ticker_to_test, years=2)
                 
                 if df_backtest.empty:
-                    st.error("Veri çekilemedi. Lütfen sayfayı yenileyip tekrar deneyin veya daha sonra deneyin (Yahoo Finance limiti).")
+                    st.error("Could not fetch data. Please try again later (API limit might be reached).")
                 else:
                     sma_candidates = range(2, 201) 
                     results = []
@@ -487,23 +500,25 @@ with tab4:
                     progress_bar.progress(1.0)
                     res_df = pd.DataFrame(results)
                     sorted_df = res_df.sort_values(by="Net PnL ($)", ascending=False).reset_index(drop=True)
-                    st.success("Tüm kombinasyonlar test edildi!")
+                    st.success("Optimization Complete!")
                     
+                    # Champion
                     best_result = sorted_df.iloc[0]
                     c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("🏆 En İyi SMA", f"SMA {int(best_result['SMA_Period'])}")
-                    c2.metric("💎 En İyi R:R", f"1 : {best_result['RR_Ratio']}")
-                    c3.metric("Toplam Kâr", f"${best_result['Net PnL ($)']:,.0f}")
-                    c4.metric("Kazanma Oranı", f"%{best_result['Win Rate (%)']:.1f}")
+                    c1.metric("🏆 Best SMA", f"SMA {int(best_result['SMA_Period'])}")
+                    c2.metric("💎 Best R:R", f"1 : {best_result['RR_Ratio']}")
+                    c3.metric("Total Profit", f"${best_result['Net PnL ($)']:,.0f}")
+                    c4.metric("Win Rate", f"%{best_result['Win Rate (%)']:.1f}")
                     st.divider()
                     
-                    st.subheader("🔥 Performans Isı Haritası (Heatmap)")
-                    st.markdown("Hangi SMA ve R:R bölgesinin en verimli olduğunu görselleştirin.")
+                    # Heatmap
+                    st.subheader("🔥 Performance Heatmap")
+                    st.markdown("Visualize which SMA and R:R zones are most profitable.")
                     
                     pivot_table = res_df.pivot(index='RR_Ratio', columns='SMA_Period', values='Net PnL ($)')
                     fig_heat = px.imshow(
                         pivot_table,
-                        labels=dict(x="SMA Periyodu", y="Risk:Reward Oranı", color="Net PnL ($)"),
+                        labels=dict(x="SMA Period", y="Risk:Reward Ratio", color="Net PnL ($)"),
                         x=pivot_table.columns,
                         y=pivot_table.index,
                         aspect="auto",
@@ -512,7 +527,8 @@ with tab4:
                     fig_heat.update_yaxes(type='category')
                     st.plotly_chart(fig_heat, use_container_width=True)
 
-                    st.subheader("🏅 En Çok Kazandıran İlk 10 Kombinasyon")
+                    # Table
+                    st.subheader("🏅 Top 10 Profitable Combinations")
                     st.dataframe(
                         sorted_df.head(10).style.format({
                             "Net PnL ($)": "${:,.0f}",
@@ -523,25 +539,28 @@ with tab4:
                         width="stretch"
                     )
 
+# ---------------------------------------------------------
+# TAB 5: DATA CLEANER
+# ---------------------------------------------------------
 with tab5:
-    st.header("📋 Piyasa Verisi Ayrıştırıcı ve Aktarıcı")
+    st.header("📋 Market Data Parser & Auto-Fill")
     col_clean1, col_clean2 = st.columns([2, 1])
     with col_clean1:
-        st.markdown("Veriyi aşağıya yapıştırın. Sistem enstrüman isimlerini tanıyıp portföyü otomatik oluşturacaktır.")
-        raw_text_input = st.text_area("Metin Girişi:", height=150, placeholder="Örnek: EUR/USD 1.05 US30 34000...")
-        if st.button("1. Veriyi Analiz Et", type="primary"):
+        st.markdown("Paste your text below. The system will identify instruments and auto-fill the portfolio.")
+        raw_text_input = st.text_area("Text Input:", height=150, placeholder="Example: EUR/USD 1.05 US30 34000...")
+        if st.button("1. Analyze Data", type="primary"):
             if raw_text_input:
                 df_cleaned = clean_market_data(raw_text_input)
                 if not df_cleaned.empty:
                     st.session_state['cleaned_data'] = df_cleaned
-                    st.success("Veri ayrıştırıldı! Tabloyu sağda görebilirsiniz.")
+                    st.success("Data parsed! View table on the right.")
                 else:
-                    st.error("Veri formatı anlaşılamadı.")
+                    st.error("Could not understand data format.")
 
     with col_clean2:
-        st.subheader("Sonuç ve Aktarım")
+        st.subheader("Result & Import")
         if 'cleaned_data' in st.session_state:
             df_result = st.session_state['cleaned_data']
             st.dataframe(df_result, height=200, width="stretch")
             st.markdown("---")
-            st.button("2. Portföye Aktar (Auto-Fill) 📥", on_click=update_portfolio_from_cleaner)
+            st.button("2. Import to Portfolio 📥", on_click=update_portfolio_from_cleaner)
