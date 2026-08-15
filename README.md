@@ -12,9 +12,14 @@ Python · Streamlit · pandas · NumPy · SciPy · Plotly · yfinance
 
 ## Screenshots
 
-<img width="1439" height="861" alt="heatmap" src="https://github.com/user-attachments/assets/baf66db7-7e24-4fbc-a28e-573857c1ab24" />
-<img width="1437" height="627" alt="simulation" src="https://github.com/user-attachments/assets/4a205130-3d83-48ee-9f76-d0dc98b3ba4a" />
-<img width="1471" height="656" alt="breakdown" src="https://github.com/user-attachments/assets/82d8f387-9405-489b-947d-fc0ec63b50ad" />
+### Risk breakdown — exposure, VaR and per-position risk contribution
+<img width="1471" alt="breakdown" src="https://github.com/user-attachments/assets/82d8f387-9405-489b-947d-fc0ec63b50ad" />
+
+### Correlation matrix and historical P&L distribution against the VaR threshold
+<img width="1437" alt="simulation" src="https://github.com/user-attachments/assets/4a205130-3d83-48ee-9f76-d0dc98b3ba4a" />
+
+### Backtest optimizer — net P&L across SMA period × risk:reward ratio
+<img width="1439" alt="heatmap" src="https://github.com/user-attachments/assets/baf66db7-7e24-4fbc-a28e-573857c1ab24" />
 
 ---
 
